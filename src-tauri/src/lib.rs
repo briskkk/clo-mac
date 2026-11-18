@@ -1,4 +1,5 @@
 mod macos;
+mod panel;
 mod poll;
 mod secret;
 mod tray;
@@ -6,7 +7,9 @@ mod tray;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use glance_core::{accept_session_token, page_url, BarState, TaskSnap, DEFAULT_BASE_URL, LOCAL_BASE_URL};
+use glance_core::{
+    accept_session_token, page_url, BarState, TaskSnap, DEFAULT_BASE_URL, LOCAL_BASE_URL,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_notification::NotificationExt;
@@ -53,15 +56,22 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             load_startup(&handle);
-            let base = handle.state::<AppState>().base_url.lock().unwrap_or_else(|err| err.into_inner()).clone();
+            let base = handle
+                .state::<AppState>()
+                .base_url
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone();
             let start = page_url(&base, "/").unwrap_or_else(|_| format!("{DEFAULT_BASE_URL}/"));
             let url = url::Url::parse(&start).expect("base url");
             let window = WebviewWindowBuilder::new(&handle, "main", WebviewUrl::External(url))
                 .title("家庭财富终端")
                 .inner_size(1280.0, 840.0)
                 .min_inner_size(960.0, 640.0)
+                .visible(false)
                 .initialization_script(glance_core::SESSION_HOOK)
                 .build()?;
+            let _ = window.hide();
             let app_handle = handle.clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -108,7 +118,11 @@ fn load_startup(app: &AppHandle) {
     let base = std::env::var("CLO_BASE_URL")
         .ok()
         .and_then(|value| glance_core::normalize_base_url(&value).ok())
-        .or_else(|| saved.as_ref().and_then(|config| glance_core::normalize_base_url(&config.base_url).ok()))
+        .or_else(|| {
+            saved
+                .as_ref()
+                .and_then(|config| glance_core::normalize_base_url(&config.base_url).ok())
+        })
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
     let state = app.state::<AppState>();
     *state.base_url.lock().unwrap_or_else(|err| err.into_inner()) = base;
@@ -123,12 +137,14 @@ fn load_startup(app: &AppHandle) {
     };
     *state.token.lock().unwrap_or_else(|err| err.into_inner()) = token;
     #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 }
 
 #[tauri::command]
 fn store_session_token(app: AppHandle, token: String) {
-    let Ok(token) = accept_session_token(&token) else { return };
+    let Ok(token) = accept_session_token(&token) else {
+        return;
+    };
     secret::save_token(&token);
     let state = app.state::<AppState>();
     *state.token.lock().unwrap_or_else(|err| err.into_inner()) = Some(token);
@@ -154,11 +170,15 @@ pub fn clear_session_state(app: &AppHandle) {
 
 fn bump(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let mut generation = state.generation.lock().unwrap_or_else(|err| err.into_inner());
+    let mut generation = state
+        .generation
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     *generation = generation.wrapping_add(1);
 }
 
 pub fn show_main(app: &AppHandle) {
+    panel::hide();
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
@@ -193,22 +213,43 @@ pub fn handle_menu(app: &AppHandle, id: &str) {
 }
 
 fn task_href(app: &AppHandle, key: &str) -> Option<String> {
-    let bar = app.state::<AppState>().bar.lock().unwrap_or_else(|err| err.into_inner()).clone();
-    let BarState::Ready { tasks, .. } = bar else { return None };
+    let bar = app
+        .state::<AppState>()
+        .bar
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let BarState::Ready { tasks, .. } = bar else {
+        return None;
+    };
     let snaps = match tasks {
         glance_core::TaskSource::Engine(items) => items,
-        glance_core::TaskSource::FundFallback { pending_purchase_count } if key == "FUND_CONFIRMATION" && pending_purchase_count > 0 => {
+        glance_core::TaskSource::FundFallback {
+            pending_purchase_count,
+        } if key == "FUND_CONFIRMATION" && pending_purchase_count > 0 => {
             return Some("/fund-confirmations".to_string());
         }
         _ => return None,
     };
-    snaps.into_iter().find(|item| item.key == key).map(|item| item.href)
+    snaps
+        .into_iter()
+        .find(|item| item.key == key)
+        .map(|item| item.href)
 }
 
 fn open_path(app: &AppHandle, path: &str) {
-    let base = app.state::<AppState>().base_url.lock().unwrap_or_else(|err| err.into_inner()).clone();
-    let Ok(target) = page_url(&base, path) else { return };
-    let Ok(url) = url::Url::parse(&target) else { return };
+    let base = app
+        .state::<AppState>()
+        .base_url
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let Ok(target) = page_url(&base, path) else {
+        return;
+    };
+    let Ok(url) = url::Url::parse(&target) else {
+        return;
+    };
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.navigate(url);
     }
@@ -216,10 +257,16 @@ fn open_path(app: &AppHandle, path: &str) {
 }
 
 fn switch_server(app: &AppHandle, base: &str) {
-    let Ok(base) = glance_core::normalize_base_url(base) else { return };
+    let Ok(base) = glance_core::normalize_base_url(base) else {
+        return;
+    };
     {
         let state = app.state::<AppState>();
-        let current = state.base_url.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        let current = state
+            .base_url
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
         if current == base {
             show_main(app);
             return;
@@ -236,8 +283,16 @@ pub fn save_config(app: &AppHandle) {
     let Some(path) = config_path(app) else { return };
     let state = app.state::<AppState>();
     let config = ConfigFile {
-        base_url: state.base_url.lock().unwrap_or_else(|err| err.into_inner()).clone(),
-        baseline: state.baseline.lock().unwrap_or_else(|err| err.into_inner()).clone(),
+        base_url: state
+            .base_url
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone(),
+        baseline: state
+            .baseline
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone(),
     };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -254,5 +309,8 @@ fn read_config(app: &AppHandle) -> Option<ConfigFile> {
 }
 
 fn config_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|dir| dir.join("config.json"))
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("config.json"))
 }

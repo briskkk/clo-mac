@@ -1,24 +1,32 @@
 //! 菜单栏展示与待办提醒。数字只来自服务端 JSON，这里做解析、着色和文案，不重算盈亏。
 
+mod glance;
 mod hook;
 mod icon;
 mod menu;
 mod money;
+mod schedule;
 mod summary;
 mod tasks;
 mod url_base;
 
+pub use glance::{glance_lines, GlanceLine};
 pub use hook::SESSION_HOOK;
-pub use icon::{render_status, Appearance, RgbaImage};
+pub use icon::{render_status, tone_rgba, Appearance, RgbaImage};
 pub use menu::{
-    baseline_after, menu_entries, notifications_due, status_text, tooltip, BarState, MenuEntry, StatusText,
-    TaskSource, POLL_INTERVAL,
+    baseline_after, menu_entries, notifications_due, status_text, tooltip, BarState, MenuEntry,
+    StatusText, TaskSource,
 };
 pub use money::{format_cny, format_percent, format_signed_amount, Tone};
+pub use schedule::{
+    automatic_poll_delay, automatic_poll_delay_now, format_display_time,
+    markets_in_regular_session, CLOSED_POLL_INTERVAL, DISPLAY_TIMEZONE, SESSION_POLL_INTERVAL,
+};
 pub use summary::{parse_summary, SummaryGlance};
 pub use tasks::{notification_id, parse_tasks, TaskSnap};
 pub use url_base::{
-    normalize_base_url, page_url, preset_of, ServerPreset, UrlError, DEFAULT_BASE_URL, LOCAL_BASE_URL,
+    normalize_base_url, page_url, preset_of, ServerPreset, UrlError, DEFAULT_BASE_URL,
+    LOCAL_BASE_URL,
 };
 
 /// 登录接口返回的会话令牌。拒绝空值、过长值和口令字符，错误信息不回显原文。
@@ -58,7 +66,11 @@ mod source_guard {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == "target" || name == "node_modules" || name == "icons" || name.starts_with('.') {
+            if name == "target"
+                || name == "node_modules"
+                || name == "icons"
+                || name.starts_with('.')
+            {
                 continue;
             }
             if path.is_dir() {
@@ -72,7 +84,9 @@ mod source_guard {
             if !text_ext {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(&path) else { continue };
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
             let forbidden = ["111", "229", "116", "222"].join(".");
             if text.contains(&forbidden) {
                 offenders.push(path.display().to_string());
@@ -87,7 +101,8 @@ mod source_guard {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let conf_path = root.join("src-tauri/tauri.conf.json");
         let conf: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&conf_path).expect("tauri.conf.json")).unwrap();
+            serde_json::from_str(&fs::read_to_string(&conf_path).expect("tauri.conf.json"))
+                .unwrap();
         let command = conf["build"]["beforeDevCommand"]
             .as_str()
             .expect("beforeDevCommand");
@@ -99,7 +114,9 @@ mod source_guard {
             root.join(script).is_file(),
             "beforeDevCommand {command:?} must name a file under the repository root, not src-tauri/"
         );
-        let frontend = conf["build"]["frontendDist"].as_str().expect("frontendDist");
+        let frontend = conf["build"]["frontendDist"]
+            .as_str()
+            .expect("frontendDist");
         assert!(
             conf_path.parent().unwrap().join(frontend).is_dir(),
             "frontendDist is relative to tauri.conf.json"
@@ -111,7 +128,10 @@ mod source_guard {
         let launcher = fs::read_to_string(root.join("scripts/tauri-dev.mjs")).unwrap();
         let package = fs::read_to_string(root.join("package.json")).unwrap();
         for source in [dev_url, server.as_str(), launcher.as_str()] {
-            assert!(!source.contains(":1420"), "do not bind the crowded dev port: {source}");
+            assert!(
+                !source.contains(":1420"),
+                "do not bind the crowded dev port: {source}"
+            );
         }
         assert!(server.contains("const DEFAULT_PORT = 31420"));
         assert!(server.contains("CLO_DEV_PORT"));
