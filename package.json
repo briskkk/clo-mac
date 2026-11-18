@@ -1,0 +1,12 @@
+{
+  "name": "family-wealth-terminal",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/tauri-dev.mjs",
+    "build": "tauri build --bundles app",
+    "test": "cargo test --manifest-path glance-core/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
