@@ -42,7 +42,9 @@ pub fn activate() {}
 #[cfg(target_os = "macos")]
 pub fn apply_status_title_tint(title: &str, tone: Option<glance_core::Tone>) {
     use objc::runtime::Object;
-    use objc::{class, msg_send, sel_impl};
+    // `msg_send!` expands to `sel!`, and `sel!` expands to `sel_impl!`.
+    // Both macros have to be in scope; neither is reached through `$crate`.
+    use objc::{class, msg_send, sel, sel_impl};
 
     unsafe {
         let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
@@ -85,7 +87,7 @@ fn tint_status_view(
     tone: Option<glance_core::Tone>,
 ) {
     use objc::runtime::Object;
-    use objc::{class, msg_send, sel_impl};
+    use objc::{class, msg_send, sel, sel_impl};
 
     unsafe {
         if view.is_null() || !class_name(view).contains("StatusBar") {
@@ -122,7 +124,7 @@ fn tint_status_view(
 #[cfg(target_os = "macos")]
 fn title_color(tone: Option<glance_core::Tone>) -> *mut objc::runtime::Object {
     use objc::runtime::Object;
-    use objc::{class, msg_send, sel_impl};
+    use objc::{class, msg_send, sel, sel_impl};
 
     unsafe {
         let Some(tone) = tone else {
