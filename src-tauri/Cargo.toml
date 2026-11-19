@@ -15,6 +15,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+
 [dependencies]
 glance-core = { path = "../glance-core" }
 keyring = "2"

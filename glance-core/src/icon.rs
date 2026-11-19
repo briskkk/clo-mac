@@ -13,14 +13,19 @@ pub struct RgbaImage {
     pub rgba: Vec<u8>,
 }
 
-/// 菜单栏上的今日盈亏。浅色用工作台涨跌色，深色用深色主题的涨跌色。
-pub fn render_status(text: &str, tone: Tone, appearance: Appearance) -> RgbaImage {
-    let color = match (appearance, tone) {
+/// 涨红跌绿。菜单栏图标和原生概览用同一组颜色。
+pub fn tone_rgba(tone: Tone, appearance: Appearance) -> [u8; 4] {
+    match (appearance, tone) {
         (Appearance::Light, Tone::Up) => [0x98, 0x2c, 0x26, 0xff],
         (Appearance::Light, Tone::Down) => [0x16, 0x61, 0x53, 0xff],
         (Appearance::Dark, Tone::Up) => [0xff, 0xa1, 0x84, 0xff],
         (Appearance::Dark, Tone::Down) => [0x8e, 0xd7, 0xab, 0xff],
-    };
+    }
+}
+
+/// 菜单栏上的今日盈亏。浅色用工作台涨跌色，深色用深色主题的涨跌色。
+pub fn render_status(text: &str, tone: Tone, appearance: Appearance) -> RgbaImage {
+    let color = tone_rgba(tone, appearance);
     let scale = 2u32;
     let glyph_w = 5u32;
     let glyph_h = 7u32;
@@ -48,25 +53,57 @@ pub fn render_status(text: &str, tone: Tone, appearance: Appearance) -> RgbaImag
             }
         }
     }
-    RgbaImage { width, height, rgba }
+    RgbaImage {
+        width,
+        height,
+        rgba,
+    }
 }
 
 fn glyph_bits(ch: char) -> Option<[u8; 7]> {
     Some(match ch {
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
-        '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
-        '+' => [0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00100, 0b00000],
-        '-' => [0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000, 0b00000],
-        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100, 0b01000],
-        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111,
+        ],
+        '3' => [
+            0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ],
+        '6' => [
+            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+        ],
+        '+' => [
+            0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00100, 0b00000,
+        ],
+        '-' => [
+            0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        ',' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100, 0b01000,
+        ],
+        '.' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100,
+        ],
         ' ' => [0, 0, 0, 0, 0, 0, 0],
         _ => return None,
     })
@@ -92,5 +129,13 @@ mod tests {
         assert!(has_color(&dark, [0xff, 0xa1, 0x84, 0xff]));
         assert!(up.width > 8 && up.height >= 16);
         assert_eq!(up.rgba.len(), (up.width * up.height * 4) as usize);
+    }
+
+    #[test]
+    fn chinese_status_bitmap_has_no_ink() {
+        let image = render_status("请登录", Tone::Up, Appearance::Light);
+        let ink = tone_rgba(Tone::Up, Appearance::Light);
+        assert!(!has_color(&image, ink));
+        assert!(image.rgba.chunks(4).all(|pixel| pixel[3] == 0));
     }
 }

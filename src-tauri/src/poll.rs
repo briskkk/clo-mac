@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use glance_core::{
-    baseline_after, notifications_due, notification_id, page_url, parse_summary, parse_tasks, BarState,
-    TaskSource, POLL_INTERVAL,
+    automatic_poll_delay_now, baseline_after, classify_read_failure, notification_id,
+    notifications_due, page_url, parse_summary, parse_tasks, BarState, ReadFailure, TaskSource,
 };
 use tauri::async_runtime::spawn;
 use tauri::{AppHandle, Manager};
@@ -14,11 +14,12 @@ use crate::AppState;
 
 pub fn spawn_poll(app: AppHandle, mut poll_rx: UnboundedReceiver<()>) {
     spawn(async move {
-        let mut ticker = tokio::time::interval(POLL_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // 启动后先拉一次，和以前 interval 的第一次 tick 一样。之后的等待只约束自动刷新。
+        poll_once(&app).await;
         loop {
+            let delay = automatic_poll_delay_now();
             tokio::select! {
-                _ = ticker.tick() => poll_once(&app).await,
+                _ = tokio::time::sleep(delay) => poll_once(&app).await,
                 Some(()) = poll_rx.recv() => poll_once(&app).await,
             }
         }
@@ -27,9 +28,20 @@ pub fn spawn_poll(app: AppHandle, mut poll_rx: UnboundedReceiver<()>) {
 
 pub async fn poll_once(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let generation = *state.generation.lock().unwrap_or_else(|err| err.into_inner());
-    let token = state.token.lock().unwrap_or_else(|err| err.into_inner()).clone();
-    let base = state.base_url.lock().unwrap_or_else(|err| err.into_inner()).clone();
+    let generation = *state
+        .generation
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let token = state
+        .token
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let base = state
+        .base_url
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
     let Some(token) = token else {
         if generation_current(app, generation) {
             set_bar(app, BarState::SignedOut);
@@ -58,13 +70,22 @@ pub async fn poll_once(app: &AppHandle) {
             return;
         }
     };
-    if summary_response.status().as_u16() == 401 || summary_response.status().as_u16() == 403 {
-        crate::clear_session_state(app);
-        reopen_login(app, &base);
-        return;
-    }
-    if !summary_response.status().is_success() {
-        keep_or_unavailable(app);
+    let summary_status = summary_response.status();
+    if !summary_status.is_success() {
+        let body = if summary_status.as_u16() == 503 {
+            summary_response.text().await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        if matches!(
+            classify_read_failure(summary_status.as_u16(), &body),
+            ReadFailure::SignedOut
+        ) {
+            crate::clear_session_state(app);
+            reopen_login(app, &base);
+        } else {
+            keep_or_unavailable(app);
+        }
         return;
     }
     let Ok(summary_body) = summary_response.text().await else {
@@ -92,7 +113,14 @@ pub async fn poll_once(app: &AppHandle) {
         TaskFetch::Live(source) => source,
     };
     remind(app, &source);
-    set_bar(app, BarState::Ready { summary, tasks: source });
+    set_bar(
+        app,
+        BarState::Ready {
+            summary,
+            tasks: source,
+            stale: false,
+        },
+    );
 }
 
 enum TaskFetch {
@@ -117,13 +145,18 @@ async fn load_tasks(app: &AppHandle, base: &str, token: &str, pending: Option<u3
         return TaskFetch::Live(glance_core::TaskSource::Unavailable);
     };
     let status = response.status().as_u16();
-    if status == 401 || status == 403 {
-        return TaskFetch::SignedOut;
-    }
-    if status == 404 || status == 501 {
-        return TaskFetch::Live(fallback(pending));
-    }
     if !response.status().is_success() {
+        let body = if status == 503 {
+            response.text().await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        if matches!(classify_read_failure(status, &body), ReadFailure::SignedOut) {
+            return TaskFetch::SignedOut;
+        }
+        if status == 404 || status == 501 {
+            return TaskFetch::Live(fallback(pending));
+        }
         return TaskFetch::Live(glance_core::TaskSource::Unavailable);
     }
     let Ok(body) = response.text().await else {
@@ -137,15 +170,23 @@ async fn load_tasks(app: &AppHandle, base: &str, token: &str, pending: Option<u3
 
 fn fallback(pending: Option<u32>) -> glance_core::TaskSource {
     match pending {
-        Some(count) => glance_core::TaskSource::FundFallback { pending_purchase_count: count },
+        Some(count) => glance_core::TaskSource::FundFallback {
+            pending_purchase_count: count,
+        },
         None => glance_core::TaskSource::Unavailable,
     }
 }
 
 fn remind(app: &AppHandle, source: &TaskSource) {
     let state = app.state::<AppState>();
-    let previous = state.baseline.lock().unwrap_or_else(|err| err.into_inner()).clone();
-    let Some(due) = notifications_due(previous.as_deref(), source) else { return };
+    let previous = state
+        .baseline
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let Some(due) = notifications_due(previous.as_deref(), source) else {
+        return;
+    };
     for task in &due {
         let _ = app
             .notification()
@@ -164,24 +205,49 @@ fn remind(app: &AppHandle, source: &TaskSource) {
 
 fn keep_or_unavailable(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let current = state.bar.lock().unwrap_or_else(|err| err.into_inner()).clone();
-    if !matches!(current, BarState::Ready { .. }) {
-        set_bar(app, BarState::Unavailable);
+    let current = state
+        .bar
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    match current {
+        BarState::Ready { summary, tasks, .. } => {
+            set_bar(
+                app,
+                BarState::Ready {
+                    summary,
+                    tasks,
+                    stale: true,
+                },
+            );
+        }
+        _ => set_bar(app, BarState::Unavailable),
     }
 }
 
 fn set_bar(app: &AppHandle, bar: BarState) {
-    *app.state::<AppState>().bar.lock().unwrap_or_else(|err| err.into_inner()) = bar;
+    *app.state::<AppState>()
+        .bar
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()) = bar;
     tray::apply(app);
 }
 
 fn generation_current(app: &AppHandle, generation: u64) -> bool {
-    *app.state::<AppState>().generation.lock().unwrap_or_else(|err| err.into_inner()) == generation
+    *app.state::<AppState>()
+        .generation
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        == generation
 }
 
 fn reopen_login(app: &AppHandle, base: &str) {
-    let Ok(target) = page_url(base, "/") else { return };
-    let Ok(url) = url::Url::parse(&target) else { return };
+    let Ok(target) = page_url(base, "/") else {
+        return;
+    };
+    let Ok(url) = url::Url::parse(&target) else {
+        return;
+    };
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.navigate(url);
     }
