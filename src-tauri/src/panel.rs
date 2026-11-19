@@ -94,9 +94,10 @@ mod mac {
             return;
         }
         let app = app.clone();
+        let queued = app.clone();
         let _ = app.run_on_main_thread(move || {
             if shown() {
-                rebuild(&app);
+                rebuild(&queued);
             } else {
                 VISIBLE.store(false, Ordering::SeqCst);
             }
