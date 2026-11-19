@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use glance_core::{
-    automatic_poll_delay_now, baseline_after, notification_id, notifications_due, page_url,
-    parse_summary, parse_tasks, BarState, TaskSource,
+    automatic_poll_delay_now, baseline_after, classify_read_failure, notification_id,
+    notifications_due, page_url, parse_summary, parse_tasks, BarState, ReadFailure, TaskSource,
 };
 use tauri::async_runtime::spawn;
 use tauri::{AppHandle, Manager};
@@ -70,13 +70,22 @@ pub async fn poll_once(app: &AppHandle) {
             return;
         }
     };
-    if summary_response.status().as_u16() == 401 || summary_response.status().as_u16() == 403 {
-        crate::clear_session_state(app);
-        reopen_login(app, &base);
-        return;
-    }
-    if !summary_response.status().is_success() {
-        keep_or_unavailable(app);
+    let summary_status = summary_response.status();
+    if !summary_status.is_success() {
+        let body = if summary_status.as_u16() == 503 {
+            summary_response.text().await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        if matches!(
+            classify_read_failure(summary_status.as_u16(), &body),
+            ReadFailure::SignedOut
+        ) {
+            crate::clear_session_state(app);
+            reopen_login(app, &base);
+        } else {
+            keep_or_unavailable(app);
+        }
         return;
     }
     let Ok(summary_body) = summary_response.text().await else {
@@ -109,6 +118,7 @@ pub async fn poll_once(app: &AppHandle) {
         BarState::Ready {
             summary,
             tasks: source,
+            stale: false,
         },
     );
 }
@@ -135,13 +145,18 @@ async fn load_tasks(app: &AppHandle, base: &str, token: &str, pending: Option<u3
         return TaskFetch::Live(glance_core::TaskSource::Unavailable);
     };
     let status = response.status().as_u16();
-    if status == 401 || status == 403 {
-        return TaskFetch::SignedOut;
-    }
-    if status == 404 || status == 501 {
-        return TaskFetch::Live(fallback(pending));
-    }
     if !response.status().is_success() {
+        let body = if status == 503 {
+            response.text().await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        if matches!(classify_read_failure(status, &body), ReadFailure::SignedOut) {
+            return TaskFetch::SignedOut;
+        }
+        if status == 404 || status == 501 {
+            return TaskFetch::Live(fallback(pending));
+        }
         return TaskFetch::Live(glance_core::TaskSource::Unavailable);
     }
     let Ok(body) = response.text().await else {
@@ -195,8 +210,18 @@ fn keep_or_unavailable(app: &AppHandle) {
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .clone();
-    if !matches!(current, BarState::Ready { .. }) {
-        set_bar(app, BarState::Unavailable);
+    match current {
+        BarState::Ready { summary, tasks, .. } => {
+            set_bar(
+                app,
+                BarState::Ready {
+                    summary,
+                    tasks,
+                    stale: true,
+                },
+            );
+        }
+        _ => set_bar(app, BarState::Unavailable),
     }
 }
 

@@ -1,8 +1,8 @@
-use glance_core::{menu_entries, render_status, status_text, tooltip, BarState, ServerPreset};
+use glance_core::{menu_entries, tooltip, tray_label, BarState, ServerPreset};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItemBuilder, Menu, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Manager};
 
 use crate::{handle_menu, macos, panel, AppState};
 
@@ -59,7 +59,7 @@ pub fn apply(app: &AppHandle) {
         .clone();
     let preset = glance_core::preset_of(&base);
     let _ = refresh_menu(app, &tray, &bar, preset);
-    let _ = refresh_icon(&tray, &bar);
+    let _ = refresh_icon(app, &tray, &bar);
     let _ = tray.set_tooltip(Some(tooltip(&bar)));
     panel::refresh(app);
 }
@@ -93,24 +93,27 @@ fn refresh_menu(
     Ok(())
 }
 
-fn refresh_icon(tray: &TrayIcon<Wry>, bar: &BarState) -> tauri::Result<()> {
-    let status = status_text(bar);
-    match status.tone {
-        Some(tone) => {
-            let image = render_status(&status.title, tone, appearance());
-            let icon = Image::new_owned(image.rgba, image.width, image.height);
-            tray.set_icon_with_as_template(Some(icon), false)?;
-            tray.set_title(Some(""))?;
-        }
-        None => {
-            let icon = Image::from_bytes(TEMPLATE_ICON)?;
-            tray.set_icon_with_as_template(Some(icon), true)?;
-            tray.set_title(Some(status.title))?;
-        }
-    }
+fn refresh_icon(app: &AppHandle, tray: &TrayIcon, bar: &BarState) -> tauri::Result<()> {
+    // 状态项必须始终有系统标题和模板图标。自定义位图一旦失败、尺寸无效，或只画得出 ASCII，
+    // 再把标题设成空字符串，菜单栏额外项就会缩成 0 宽，重启后只要一刷到盈亏又会消失。
+    let label = tray_label(bar);
+    let icon = Image::from_bytes(TEMPLATE_ICON)?;
+    tray.set_icon_with_as_template(Some(icon), true)?;
+    tray.set_title(Some(label.title.as_str()))?;
+    tint_title(app, label.title, label.tone);
     Ok(())
 }
 
-fn appearance() -> glance_core::Appearance {
-    macos::appearance()
+fn tint_title(app: &AppHandle, title: String, tone: Option<glance_core::Tone>) {
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            macos::apply_status_title_tint(&title, tone);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, title, tone);
+    }
 }

@@ -130,4 +130,12 @@ mod tests {
         assert!(up.width > 8 && up.height >= 16);
         assert_eq!(up.rgba.len(), (up.width * up.height * 4) as usize);
     }
+
+    #[test]
+    fn chinese_status_bitmap_has_no_ink() {
+        let image = render_status("请登录", Tone::Up, Appearance::Light);
+        let ink = tone_rgba(Tone::Up, Appearance::Light);
+        assert!(!has_color(&image, ink));
+        assert!(image.rgba.chunks(4).all(|pixel| pixel[3] == 0));
+    }
 }

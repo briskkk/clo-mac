@@ -48,7 +48,14 @@ pub fn glance_lines(state: &BarState) -> Vec<GlanceLine> {
             lines.push(GlanceLine::Status("暂无数据".to_string()));
             lines.push(GlanceLine::Note("暂时没有读到今日盈亏".to_string()));
         }
-        BarState::Ready { summary, tasks } => {
+        BarState::Ready {
+            summary,
+            tasks,
+            stale,
+        } => {
+            if *stale {
+                lines.push(GlanceLine::Note(crate::menu::STALE_NOTE.to_string()));
+            }
             lines.push(GlanceLine::PnlLabel("今日盈亏".to_string()));
             lines.push(GlanceLine::PnlAmount {
                 text: summary.pnl_text.clone(),
@@ -183,6 +190,7 @@ mod tests {
         let up = glance_lines(&BarState::Ready {
             summary: summary(12.0, Tone::Up, "+12.00"),
             tasks: TaskSource::Engine(vec![task("FUND_CONFIRMATION", "2 笔基金份额待确认")]),
+            stale: false,
         });
         assert!(matches!(
             &up[0],
@@ -213,6 +221,7 @@ mod tests {
         let down = glance_lines(&BarState::Ready {
             summary: summary(-1.2, Tone::Down, "-1.20"),
             tasks: TaskSource::Unavailable,
+            stale: false,
         });
         assert!(matches!(
             &down[1],
@@ -231,6 +240,7 @@ mod tests {
             tasks: TaskSource::FundFallback {
                 pending_purchase_count: 2,
             },
+            stale: false,
         });
         let blob = format!("{fallback:?}");
         assert!(blob.contains("2 笔基金份额待确认"));
@@ -242,6 +252,7 @@ mod tests {
             tasks: TaskSource::FundFallback {
                 pending_purchase_count: 0,
             },
+            stale: false,
         });
         let blob = format!("{none:?}");
         assert!(blob.contains("暂无待确认申购"));
@@ -251,6 +262,7 @@ mod tests {
         let empty = glance_lines(&BarState::Ready {
             summary: summary(12.0, Tone::Up, "+12.00"),
             tasks: TaskSource::Engine(vec![]),
+            stale: false,
         });
         assert!(empty
             .iter()
@@ -258,5 +270,21 @@ mod tests {
         assert!(!empty
             .iter()
             .any(|line| matches!(line, GlanceLine::Todo { .. })));
+    }
+
+    #[test]
+    fn stale_glance_keeps_amounts_and_marks_them_old() {
+        let lines = glance_lines(&BarState::Ready {
+            summary: summary(12.0, Tone::Up, "+12.00"),
+            tasks: TaskSource::Unavailable,
+            stale: true,
+        });
+        assert!(lines
+            .iter()
+            .any(|line| matches!(line, GlanceLine::PnlAmount { text, .. } if text == "+12.00")));
+        assert!(lines.iter().any(|line| matches!(line, GlanceLine::Metric { label, value } if label == "净资产" && value == "¥100.00")));
+        assert!(lines
+            .iter()
+            .any(|line| matches!(line, GlanceLine::Note(text) if text == crate::menu::STALE_NOTE)));
     }
 }

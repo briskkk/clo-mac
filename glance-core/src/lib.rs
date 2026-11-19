@@ -1,5 +1,6 @@
 //! 菜单栏展示与待办提醒。数字只来自服务端 JSON，这里做解析、着色和文案，不重算盈亏。
 
+mod auth;
 mod glance;
 mod hook;
 mod icon;
@@ -10,12 +11,13 @@ mod summary;
 mod tasks;
 mod url_base;
 
+pub use auth::{classify_read_failure, ReadFailure};
 pub use glance::{glance_lines, GlanceLine};
 pub use hook::SESSION_HOOK;
 pub use icon::{render_status, tone_rgba, Appearance, RgbaImage};
 pub use menu::{
-    baseline_after, menu_entries, notifications_due, status_text, tooltip, BarState, MenuEntry,
-    StatusText, TaskSource,
+    baseline_after, menu_entries, notifications_due, status_text, tooltip, tray_label, BarState,
+    MenuEntry, StatusText, TaskSource, TrayLabel, STALE_NOTE,
 };
 pub use money::{format_cny, format_percent, format_signed_amount, Tone};
 pub use schedule::{

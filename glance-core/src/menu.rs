@@ -23,13 +23,24 @@ pub enum BarState {
     Ready {
         summary: SummaryGlance,
         tasks: TaskSource,
+        /// 上一笔数字还在，但这轮刷新失败。不是未登录，也不改数字。
+        stale: bool,
     },
 }
+
+pub const STALE_NOTE: &str = "暂时没有读到新的今日盈亏";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusText {
     pub title: String,
-    /// 有盈亏颜色时由原生菜单栏绘制红涨绿跌；没有则用系统菜单栏颜色。
+    /// 有盈亏时给菜单栏标题着色。标题本身始终由系统绘制，不用自定义位图代替。
+    pub tone: Option<Tone>,
+}
+
+/// 菜单栏状态项上始终要有的文字。自定义位图不能单独占住状态项，否则绘失败或丢掉汉字时整项会消失。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrayLabel {
+    pub title: String,
     pub tone: Option<Tone>,
 }
 
@@ -74,6 +85,19 @@ impl MenuEntry {
     }
 }
 
+pub fn tray_label(state: &BarState) -> TrayLabel {
+    let status = status_text(state);
+    let title = if status.title.trim().is_empty() {
+        "家庭财富终端".to_string()
+    } else {
+        status.title
+    };
+    TrayLabel {
+        title,
+        tone: status.tone,
+    }
+}
+
 pub fn status_text(state: &BarState) -> StatusText {
     match state {
         BarState::SignedOut => StatusText {
@@ -100,7 +124,11 @@ pub fn tooltip(state: &BarState) -> String {
         BarState::SignedOut => "请登录。左键查看概览。".to_string(),
         BarState::Syncing => "正在读取服务器上的今日盈亏。".to_string(),
         BarState::Unavailable => "暂时没有读到今日盈亏。".to_string(),
-        BarState::Ready { summary, tasks } => {
+        BarState::Ready {
+            summary,
+            tasks,
+            stale,
+        } => {
             let net = format_cny(summary.net_worth).unwrap_or_else(|| "—".to_string());
             let investable = format_cny(summary.investable).unwrap_or_else(|| "—".to_string());
             let todo = task_tooltip(tasks);
@@ -109,8 +137,13 @@ pub fn tooltip(state: &BarState) -> String {
                 .as_ref()
                 .map(|stamp| format!("\n更新于 {stamp}"))
                 .unwrap_or_default();
+            let stale = if *stale {
+                format!("\n{STALE_NOTE}")
+            } else {
+                String::new()
+            };
             format!(
-                "今日盈亏 {}（{}）\n净资产 {net}\n可投资 {investable}\n{todo}{stamp}",
+                "今日盈亏 {}（{}）\n净资产 {net}\n可投资 {investable}\n{todo}{stamp}{stale}",
                 summary.pnl_text, summary.pct_text
             )
         }
@@ -148,7 +181,11 @@ pub fn menu_entries(state: &BarState, preset: ServerPreset) -> Vec<MenuEntry> {
         BarState::Unavailable => {
             entries.push(MenuEntry::item("info-state", "暂时没有读到今日盈亏", false));
         }
-        BarState::Ready { summary, tasks } => {
+        BarState::Ready {
+            summary,
+            tasks,
+            stale,
+        } => {
             let net = format_cny(summary.net_worth).unwrap_or_else(|| "—".to_string());
             let investable = format_cny(summary.investable).unwrap_or_else(|| "—".to_string());
             entries.push(MenuEntry::item(
@@ -156,6 +193,9 @@ pub fn menu_entries(state: &BarState, preset: ServerPreset) -> Vec<MenuEntry> {
                 format!("今日盈亏 {}（{}）", summary.pnl_text, summary.pct_text),
                 false,
             ));
+            if *stale {
+                entries.push(MenuEntry::item("info-stale", STALE_NOTE, false));
+            }
             entries.push(MenuEntry::item("info-net", format!("净资产 {net}"), false));
             entries.push(MenuEntry::item(
                 "info-investable",
@@ -338,6 +378,7 @@ mod tests {
         let state = BarState::Ready {
             summary: summary(),
             tasks: TaskSource::Engine(vec![task("FUND_CONFIRMATION", 2)]),
+            stale: false,
         };
         assert_eq!(status_text(&state).tone, Some(Tone::Up));
         let entries = menu_entries(&state, ServerPreset::Local);
@@ -368,6 +409,7 @@ mod tests {
             tasks: TaskSource::FundFallback {
                 pending_purchase_count: 2,
             },
+            stale: false,
         };
         let labels: Vec<_> = menu_entries(&state, ServerPreset::Production)
             .into_iter()
@@ -405,5 +447,54 @@ mod tests {
                 .is_empty()
         );
         assert!(notifications_due(Some(&baseline), &TaskSource::Unavailable).is_none());
+    }
+
+    #[test]
+    fn tray_title_stays_visible_for_login_and_pnl() {
+        let signed_out = tray_label(&BarState::SignedOut);
+        assert_eq!(signed_out.title, "请登录");
+        assert!(signed_out.tone.is_none());
+        assert!(signed_out.title.chars().any(|ch| !ch.is_ascii()));
+
+        let ready = BarState::Ready {
+            summary: summary(),
+            tasks: TaskSource::Unavailable,
+            stale: false,
+        };
+        let label = tray_label(&ready);
+        assert_eq!(label.title, "+12.00");
+        assert_eq!(label.tone, Some(Tone::Up));
+        assert!(!label.title.trim().is_empty());
+
+        for state in [
+            BarState::SignedOut,
+            BarState::Syncing,
+            BarState::Unavailable,
+            ready,
+        ] {
+            assert!(!tray_label(&state).title.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn stale_ready_keeps_the_last_numbers() {
+        let state = BarState::Ready {
+            summary: summary(),
+            tasks: TaskSource::Unavailable,
+            stale: true,
+        };
+        assert_eq!(status_text(&state).title, "+12.00");
+        assert_eq!(tray_label(&state).title, "+12.00");
+        let labels: Vec<_> = menu_entries(&state, ServerPreset::Production)
+            .into_iter()
+            .map(|entry| entry.label)
+            .collect();
+        assert!(labels
+            .iter()
+            .any(|label| label == "今日盈亏 +12.00（+0.30%）"));
+        assert!(labels.iter().any(|label| label == "净资产 ¥100.00"));
+        assert!(labels.iter().any(|label| label == STALE_NOTE));
+        assert!(tooltip(&state).contains(STALE_NOTE));
+        assert!(!labels.iter().any(|label| label.contains("0 笔")));
     }
 }
